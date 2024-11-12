@@ -3,17 +3,19 @@ use std::error::Error;
 use dialoguer::{theme::ColorfulTheme, Input};
 use ollama_rs::{
     generation::completion::{
-        request::GenerationRequest
+        request::GenerationRequest, GenerationContext, GenerationResponseStream,
     },
     Ollama,
 };
+use tokio::io::{stdout, AsyncWriteExt};
+use tokio_stream::StreamExt;
 use owo_colors::{DynColors, OwoColorize};
 use fancy::printcoln;
 use serde::Deserialize;
 use std::fs;
 use std::process::exit;
-use spinners::{Spinner, Spinners};
 use toml;
+
 #[derive(Deserialize)]
 struct Data {
     config: Config,
@@ -35,9 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
         /_/   /_/                 /_/   /_/
 
      "#;
-    let colors: [DynColors; 6] = [
-        "#B80A41", "#4E4BA8", "#6EB122", "#DAAC06", "#00938A", "#E23838",
-    ]
+    let colors: [DynColors; 6] = ["#B80A41", "#4E4BA8", "#6EB122", "#DAAC06", "#00938A", "#E23838",]
         .map(|color| color.parse().unwrap());
 
     for line in COLORS.split_inclusive('\n') {
@@ -45,7 +45,9 @@ async fn main() -> Result<(), Box<dyn Error>>{
             print!("{}", text.color(color).bold());
         }
     }
-    printcoln!("[green] Ollama-Copilot (C) 2024 GR v0.1.3");
+   let title = format!("Ollama-Copilot (C) 2024 by Gennaro Riccio v{}",env!("CARGO_PKG_VERSION"));
+   printcoln!("[green]{}",title);
+
     let filename = "config.toml";
     let contents = match fs::read_to_string(filename) {
         Ok(c) => c,
@@ -61,26 +63,40 @@ async fn main() -> Result<(), Box<dyn Error>>{
             exit(1);
         }
     };
+
     printcoln!("[blue] Modello Usato: {}",data.config.model);
+
     loop{
         let prompt: String = Input::with_theme(&ColorfulTheme::default())
             .with_prompt("Dimmi:")
             .interact_text()
             .unwrap();
+
         if prompt == "exit" {
             printcoln!("[green][bold]Tanto Ciao!.[bold]");
             break;
         }
-        let mut sp = Spinner::new(Spinners::Dots2, "Fammi pensare...".into());
+        let mut stdout = stdout();
         let ollama = Ollama::default();
+        let context: Option<GenerationContext> = None;
         let model = data.config.model.to_string();
-        let res = ollama.generate(GenerationRequest::new(model, prompt.clone())).await;
-        if let Ok(res) = res {
-            sp.stop();
-            println!("\n---> Ho elaborato questo:");
-            println!("{}", res.response);
+        println!();
+        let mut request = GenerationRequest::new(model, prompt);
+        if let Some(context) = context.clone() {
+            request = request.context(context);
         }
+        let mut stream: GenerationResponseStream = ollama.generate_stream(request).await?;
+        while let Some(Ok(res)) = stream.next().await {
+            for ele in res {
+                stdout.write_all(ele.response.as_bytes()).await?;
+                stdout.flush().await?;
 
+                if let Some(final_data) = ele.context {
+                    _ = Some(final_data);
+                }
+            }
+        }
+        println!("\n");
     }
     Ok(())
 }
